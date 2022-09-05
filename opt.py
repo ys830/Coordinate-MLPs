@@ -5,7 +5,7 @@ def get_opts():
 
     parser.add_argument('--image_path', type=str, default='images/fox.jpg',
                         help='path to the image to reconstruct')
-    parser.add_argument('--img_wh', nargs="+", type=int, default=[800, 800],
+    parser.add_argument('--img_wh', nargs="+", type=int, default=[112, 112],
                         help='resolution (img_w, img_h) of the image')
     parser.add_argument('--use_pe', default=False, action='store_true',
                         help='use positional encoding or not')
