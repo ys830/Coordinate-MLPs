@@ -22,6 +22,9 @@ from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 
+import os
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 def get_learning_rate(optimizer):
     for param_group in optimizer.param_groups:
@@ -32,7 +35,7 @@ class CoordMLPSystem(LightningModule):
     def __init__(self, hparams):
         super().__init__()
         self.save_hyperparameters(hparams)
-
+        
         if hparams.use_pe:
             P = torch.cat([torch.eye(2)*2**i for i in range(10)], 1) # (2, 2*10)
             self.pe = PE(P)
@@ -71,7 +74,7 @@ class CoordMLPSystem(LightningModule):
         if hparams.use_pe or hparams.arch=='ff':
             x = self.pe(x)
         return self.mlp(x)
-        
+
     def setup(self, stage=None):
         self.train_dataset = ImageDataset(hparams.image_path,
                                           hparams.img_wh,
