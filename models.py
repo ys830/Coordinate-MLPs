@@ -6,7 +6,7 @@ from einops import rearrange
 
 class MLP(nn.Module):
     def __init__(self, n_in,
-                 n_layers=4, n_hidden_units=256,
+                 n_layers=4, n_hidden_units=64,
                  act='relu', act_trainable=False,
                  **kwargs):
         super().__init__()
@@ -38,9 +38,9 @@ class MLP(nn.Module):
             if i < n_layers-1:
                 layers += [l, act_]
             else:
-                layers += [nn.Linear(n_hidden_units, 3), nn.Sigmoid()]
+                layers += [nn.Linear(n_hidden_units, 1), nn.Sigmoid()]
 
-        self.net = nn.Sequential(*layers)
+        self.net = nn.Sequential(*layers) # *list表明将list展开
 
     def forward(self, x):
         """

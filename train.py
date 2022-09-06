@@ -88,14 +88,14 @@ class CoordMLPSystem(LightningModule):
                           shuffle=True,
                           num_workers=4,
                           batch_size=self.hparams.batch_size,
-                          pin_memory=True)
+                          pin_memory=False)
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset,
                           shuffle=False,
                           num_workers=4,
                           batch_size=self.hparams.batch_size,
-                          pin_memory=True)
+                          pin_memory=False)
 
     def configure_optimizers(self):
         self.opt = Adam(self.mlp.parameters(), lr=self.hparams.lr)
@@ -133,7 +133,7 @@ class CoordMLPSystem(LightningModule):
         if hparams.arch=='bacon':
             log['rgb_pred'] = rgb_pred[-1]
         else:
-            log['rgb_pred'] = rgb_pred
+            log['rgb_pred'] = rgb_pred #（B，1）
 
         return log
 
@@ -144,14 +144,17 @@ class CoordMLPSystem(LightningModule):
         rgb_gt = rearrange(rgb_gt, '(h w) c -> c h w',
                            h=hparams.img_wh[1]//2,
                            w=hparams.img_wh[0]//2)
+ 
         rgb_pred = torch.cat([x['rgb_pred'] for x in outputs])
         rgb_pred = rearrange(rgb_pred, '(h w) c -> c h w',
                              h=hparams.img_wh[1]//2,
                              w=hparams.img_wh[0]//2)
 
+        #记录图片
         self.logger.experiment.add_images('val/gt_pred',
                                           torch.stack([rgb_gt, rgb_pred]),
                                           self.global_step)
+        #记录当前训练的步数：self.global_step  记录当前的epoch：elf.current_epoch
 
         self.log('val/loss', mean_loss, prog_bar=True)
         self.log('val/psnr', mean_psnr, prog_bar=True)
