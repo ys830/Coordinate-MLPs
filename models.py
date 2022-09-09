@@ -130,6 +130,7 @@ class Siren(nn.Module):
         else:
             self.net.append(SineLayer(hidden_features, out_features, 
                                       is_first=False, omega_0=hidden_omega_0))
+            # self.net.append(nn.Sigmoid())
         
         self.net = nn.Sequential(*self.net)
     

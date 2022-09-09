@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 from einops import rearrange
+from collections import OrderedDict
+import torch.utils.hooks as hooks
 
 from opt import get_opts
 
@@ -77,12 +79,11 @@ class CoordMLPSystem(LightningModule):
 
     def setup(self, stage=None):
         self.train_dataset = ImageDataset(hparams.image_path,
-                                          hparams.img_wh,
-                                          'train')
+                                          hparams.img_wh)
+                                          
         self.val_dataset = ImageDataset(hparams.image_path,
-                                        hparams.img_wh,
-                                        'val')
-
+                                        hparams.img_wh)
+                                        
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
                           shuffle=True,
@@ -121,7 +122,8 @@ class CoordMLPSystem(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         rgb_pred = self(batch['uv'])
-
+        rgb_pred = torch.clamp(rgb_pred, min=0, max=1)
+        
         if hparams.arch=='bacon':
             loss = mse(rgb_pred[-1], batch['rgb'], reduction='none')
         else:
@@ -142,13 +144,13 @@ class CoordMLPSystem(LightningModule):
         mean_psnr = -10*torch.log10(mean_loss)
         rgb_gt = torch.cat([x['rgb_gt'] for x in outputs])
         rgb_gt = rearrange(rgb_gt, '(h w) c -> c h w',
-                           h=hparams.img_wh[1]//2,
-                           w=hparams.img_wh[0]//2)
+                           h=hparams.img_wh[1],
+                           w=hparams.img_wh[0])
  
         rgb_pred = torch.cat([x['rgb_pred'] for x in outputs])
         rgb_pred = rearrange(rgb_pred, '(h w) c -> c h w',
-                             h=hparams.img_wh[1]//2,
-                             w=hparams.img_wh[0]//2)
+                             h=hparams.img_wh[1],
+                             w=hparams.img_wh[0])
 
         #记录图片
         self.logger.experiment.add_images('val/gt_pred',
@@ -158,6 +160,7 @@ class CoordMLPSystem(LightningModule):
 
         self.log('val/loss', mean_loss, prog_bar=True)
         self.log('val/psnr', mean_psnr, prog_bar=True)
+
 
 
 if __name__ == '__main__':
