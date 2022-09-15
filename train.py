@@ -1,10 +1,15 @@
+from unittest import TestLoader
 import torch
 from torch import nn
 from einops import rearrange
 from collections import OrderedDict
 import torch.utils.hooks as hooks
+from scipy.io import savemat
+
 
 from opt import get_opts
+
+
 
 # datasets
 from dataset import ImageDataset
@@ -27,6 +32,14 @@ from pytorch_lightning.loggers import TensorBoardLogger
 import os
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
+features_in_hook = []  # 勾的是指定层的输入
+features_out_hook = []  # 勾的是指定层的输出
+
+def hook(module, fea_in, fea_out):
+    features_in_hook.append(fea_in)
+    features_out_hook.append(fea_out)
+
 
 def get_learning_rate(optimizer):
     for param_group in optimizer.param_groups:
@@ -71,7 +84,7 @@ class CoordMLPSystem(LightningModule):
         elif hparams.arch == 'bacon':
             self.mlp = MultiscaleBACON(
                     frequency=[hparams.img_wh[0]//4, hparams.img_wh[1]//4])
-
+        
     def forward(self, x):
         if hparams.use_pe or hparams.arch=='ff':
             x = self.pe(x)
@@ -82,6 +95,9 @@ class CoordMLPSystem(LightningModule):
                                           hparams.img_wh)
                                           
         self.val_dataset = ImageDataset(hparams.image_path,
+                                        hparams.img_wh)
+
+        self.tset_dataset = ImageDataset(hparams.image_path,
                                         hparams.img_wh)
                                         
     def train_dataloader(self):
@@ -97,6 +113,13 @@ class CoordMLPSystem(LightningModule):
                           num_workers=4,
                           batch_size=self.hparams.batch_size,
                           pin_memory=False)
+    
+    def test_dataloader(self):
+        return DataLoader(self.tset_dataset,
+                          shuffle=False,
+                          num_workers=4,
+                          batch_size=self.hparams.img_wh[0]*self.hparams.img_wh[0],
+                          pin_memory=False)
 
     def configure_optimizers(self):
         self.opt = Adam(self.mlp.parameters(), lr=self.hparams.lr)
@@ -106,7 +129,6 @@ class CoordMLPSystem(LightningModule):
 
     def training_step(self, batch, batch_idx):
         rgb_pred = self(batch['uv'])
-
         if hparams.arch=='bacon':
             loss = sum(mse(x, batch['rgb']) for x in rgb_pred)
             psnr_ = psnr(rgb_pred[-1], batch['rgb'])
@@ -117,7 +139,7 @@ class CoordMLPSystem(LightningModule):
         self.log('lr', self.opt.param_groups[0]['lr'])
         self.log('train/loss', loss)
         self.log('train/psnr', psnr_, prog_bar=True)
-
+        
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -138,6 +160,20 @@ class CoordMLPSystem(LightningModule):
             log['rgb_pred'] = rgb_pred #（B，1）
 
         return log
+    
+    def test_step(self, batch, batch_idx):
+        rgb_pred = self(batch['uv'])  
+        mat_name = './mat_file'
+        if not os.path.exists(mat_name):
+            os.makedirs(mat_name)
+        mat_dir = os.path.join(mat_name, self.hparams.exp_name)
+    
+        layer_output = dict()
+        for i in range(len(features_out_hook)):
+            layer_output[f'layer{i}'] = features_out_hook[i].cpu().numpy()
+        
+        savemat(mat_dir,layer_output)
+        return layer_output
 
     def validation_epoch_end(self, outputs):
         mean_loss = torch.cat([x['val_loss'] for x in outputs]).mean()
@@ -156,12 +192,10 @@ class CoordMLPSystem(LightningModule):
         self.logger.experiment.add_images('val/gt_pred',
                                           torch.stack([rgb_gt, rgb_pred]),
                                           self.global_step)
-        #记录当前训练的步数：self.global_step  记录当前的epoch：elf.current_epoch
+        #记录当前训练的步数：self.global_step  记录当前的epoch：self.current_epoch
 
         self.log('val/loss', mean_loss, prog_bar=True)
         self.log('val/psnr', mean_psnr, prog_bar=True)
-
-
 
 if __name__ == '__main__':
     hparams = get_opts()
@@ -186,3 +220,8 @@ if __name__ == '__main__':
                       benchmark=True)
 
     trainer.fit(system)
+    for (name, module) in system.named_modules():
+        if "linear" in name:
+            module.register_forward_hook(hook=hook)
+    trainer.test(system)
+

@@ -5,14 +5,15 @@ import numpy as np
 from kornia import create_meshgrid
 from einops import rearrange
 import cv2
+import os
 from typing import Tuple
+
 
 
 class ImageDataset(Dataset):
     def __init__(self, image_path: str, img_wh: Tuple[int, int]):
         img_wh = tuple(img_wh)
         image = imageio.imread(image_path)/255.
-        image = cv2.resize(image, img_wh)
         image = image[:, :, None]
     
         self.uv = create_meshgrid(*image.shape[:2], True)[0] #[112, 112, 2]
