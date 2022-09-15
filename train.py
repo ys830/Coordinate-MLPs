@@ -5,6 +5,7 @@ from einops import rearrange
 from collections import OrderedDict
 import torch.utils.hooks as hooks
 from scipy.io import savemat
+from tqdm import tqdm,trange
 
 
 from opt import get_opts
@@ -33,8 +34,7 @@ import os
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
-features_in_hook = []  # 勾的是指定层的输入
-features_out_hook = []  # 勾的是指定层的输出
+
 
 def hook(module, fea_in, fea_out):
     features_in_hook.append(fea_in)
@@ -47,9 +47,11 @@ def get_learning_rate(optimizer):
 
 
 class CoordMLPSystem(LightningModule):
-    def __init__(self, hparams):
+    def __init__(self, hparams, image_path, image_name):
         super().__init__()
         self.save_hyperparameters(hparams)
+        self.image_path = image_path
+        self.image_name = image_name
         
         if hparams.use_pe:
             P = torch.cat([torch.eye(2)*2**i for i in range(10)], 1) # (2, 2*10)
@@ -91,13 +93,13 @@ class CoordMLPSystem(LightningModule):
         return self.mlp(x)
 
     def setup(self, stage=None):
-        self.train_dataset = ImageDataset(hparams.image_path,
+        self.train_dataset = ImageDataset(self.image_path,
                                           hparams.img_wh)
                                           
-        self.val_dataset = ImageDataset(hparams.image_path,
+        self.val_dataset = ImageDataset(self.image_path,
                                         hparams.img_wh)
 
-        self.tset_dataset = ImageDataset(hparams.image_path,
+        self.tset_dataset = ImageDataset(self.image_path,
                                         hparams.img_wh)
                                         
     def train_dataloader(self):
@@ -163,17 +165,17 @@ class CoordMLPSystem(LightningModule):
     
     def test_step(self, batch, batch_idx):
         rgb_pred = self(batch['uv'])  
-        mat_name = './mat_file'
+        mat_name = './mat_file/{}'.format(self.hparams.exp_name)
         if not os.path.exists(mat_name):
             os.makedirs(mat_name)
-        mat_dir = os.path.join(mat_name, self.hparams.exp_name)
+        mat_dir = os.path.join(mat_name, self.image_name + ".mat")
     
         layer_output = dict()
         for i in range(len(features_out_hook)):
             layer_output[f'layer{i}'] = features_out_hook[i].cpu().numpy()
         
+        print(layer_output.keys())
         savemat(mat_dir,layer_output)
-        return layer_output
 
     def validation_epoch_end(self, outputs):
         mean_loss = torch.cat([x['val_loss'] for x in outputs]).mean()
@@ -199,29 +201,39 @@ class CoordMLPSystem(LightningModule):
 
 if __name__ == '__main__':
     hparams = get_opts()
-    system = CoordMLPSystem(hparams)
 
-    pbar = TQDMProgressBar(refresh_rate=1)
-    callbacks = [pbar]
+    for filepath,dirnames,filenames in os.walk(hparams.image_file):
+        for filename in tqdm(filenames, desc="image_number"):
+            features_in_hook = []  # 勾的是指定层的输入
+            features_out_hook = []  # 勾的是指定层的输出
 
-    logger = TensorBoardLogger(save_dir="logs",
-                               name=hparams.exp_name,
-                               default_hp_metric=False)
+            image_path = os.path.join(filepath,filename)
+            image_name = filename.split(".")[0]
+            system = CoordMLPSystem(hparams, image_path, image_name)
 
-    trainer = Trainer(max_epochs=hparams.num_epochs,
-                      callbacks=callbacks,
-                      logger=logger,
-                      enable_model_summary=True,
-                      accelerator='auto',
-                      devices=1,
-                      num_sanity_val_steps=0,
-                      log_every_n_steps=1,
-                      check_val_every_n_epoch=20,
-                      benchmark=True)
+            pbar = TQDMProgressBar(refresh_rate=1)
+            callbacks = [pbar]
 
-    trainer.fit(system)
-    for (name, module) in system.named_modules():
-        if "linear" in name:
-            module.register_forward_hook(hook=hook)
-    trainer.test(system)
+            logger = TensorBoardLogger(save_dir="new_logs",
+                                        name=hparams.exp_name,
+                                        version= image_name, 
+                                        default_hp_metric=False)
+
+            trainer = Trainer(max_epochs=hparams.num_epochs,
+                                callbacks=callbacks,
+                                logger=logger,
+                                enable_model_summary=True,
+                                accelerator='auto',
+                                devices=1,
+                                num_sanity_val_steps=0,
+                                log_every_n_steps=1,
+                                check_val_every_n_epoch=20,
+                                benchmark=True)
+
+            trainer.fit(system)
+            for (name, module) in system.named_modules():
+                if "linear" in name:
+                    module.register_forward_hook(hook=hook)
+            trainer.test(system)
+          
 

@@ -9,7 +9,6 @@ import os
 from typing import Tuple
 
 
-
 class ImageDataset(Dataset):
     def __init__(self, image_path: str, img_wh: Tuple[int, int]):
         img_wh = tuple(img_wh)

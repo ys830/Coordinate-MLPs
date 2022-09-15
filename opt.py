@@ -5,6 +5,8 @@ def get_opts():
 
     parser.add_argument('--image_path', type=str, default='images/fox.jpg',
                         help='path to the image to reconstruct')
+    parser.add_argument('--image_file', type=str, default='./images',
+                        help='file to the image to reconstruct')
     parser.add_argument('--img_wh', nargs="+", type=int, default=[112, 112],
                         help='resolution (img_w, img_h) of the image')
     parser.add_argument('--use_pe', default=False, action='store_true',
@@ -28,7 +30,7 @@ def get_opts():
                         help='number of batch size')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='learning rate')
-    parser.add_argument('--num_epochs', type=int, default=1000,
+    parser.add_argument('--num_epochs', type=int, default=5,
                         help='number of epochs')
 
     parser.add_argument('--exp_name', type=str, default='exp',

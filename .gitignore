@@ -132,7 +132,10 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-train2.py
+train2(useless).py
 debug.ipynb
-/mat_file
+/mat_file/
 test.py
+/new_logs/
+/test_images/
+/images/
