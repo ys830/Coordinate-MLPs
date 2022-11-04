@@ -10,9 +10,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": true,
-            "args":["--image_path","./images/0X1A0A263B22CCD966_large.png", 
-                    "--ckpt_path", "./logs/siren30_clip_64/version_0/checkpoints/epoch=999-step=13000.ckpt"]
+            "justMyCode": true
         }
     ]
 }

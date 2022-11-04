@@ -8,22 +8,24 @@ import cv2
 import os
 from typing import Tuple
 
+import pickle
+
 
 class ImageDataset(Dataset):
     def __init__(self, image_path: str, img_wh: Tuple[int, int]):
         img_wh = tuple(img_wh)
-        image = imageio.imread(image_path)/255.
+        image = cv2.imread(image_path, -1)
         image = image[:, :, None]
     
-        self.uv = create_meshgrid(*image.shape[:2], True)[0] #[112, 112, 2]
-        self.rgb = torch.FloatTensor(image) #[112, 112, 1]
-
-        self.uv = rearrange(self.uv, 'h w c -> (h w) c')
-        self.rgb = rearrange(self.rgb, 'h w c -> (h w) c')
-
+        self.coords = create_meshgrid(*image.shape[:2], True)[0] #[256, 256, 2]
+        self.img = torch.FloatTensor(image) #[256, 256, 1]
+        
+        self.coords = rearrange(self.coords, 'h w c -> (h w) c')
+        self.img = rearrange(self.img, 'h w c -> (h w) c')
 
     def __len__(self):
-        return len(self.uv)
+        return len(self.img)
 
-    def __getitem__(self, idx: int):
-        return {"uv": self.uv[idx], "rgb": self.rgb[idx]}
+    def __getitem__(self,idx):
+
+        return {"coords": self.coords[idx], "img": self.img[idx]}

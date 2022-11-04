@@ -4,7 +4,6 @@ from torch import nn
 from einops import rearrange
 from collections import OrderedDict
 import torch.utils.hooks as hooks
-from scipy.io import savemat
 from tqdm import tqdm,trange
 
 
@@ -17,7 +16,7 @@ from dataset import ImageDataset
 from torch.utils.data import DataLoader
 
 # models
-from models import PE, MLP, Siren, GaborNet, MultiscaleBACON
+from models import PE, MLP, Siren, GaborNet, MultiscaleBACON, FP
 
 # metrics
 from metrics import mse, psnr
@@ -35,12 +34,6 @@ import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
-
-def hook(module, fea_in, fea_out):
-    features_in_hook.append(fea_in)
-    features_out_hook.append(fea_out)
-
-
 def get_learning_rate(optimizer):
     for param_group in optimizer.param_groups:
         return param_group['lr']
@@ -52,6 +45,9 @@ class CoordMLPSystem(LightningModule):
         self.save_hyperparameters(hparams)
         self.image_path = image_path
         self.image_name = image_name
+
+        self.FP_train = FP(hparams.num_projections, 1, train= True)
+        self.FP_test = FP(hparams.test_num_projections, 1, train= False)
         
         if hparams.use_pe:
             P = torch.cat([torch.eye(2)*2**i for i in range(10)], 1) # (2, 2*10)
@@ -104,7 +100,7 @@ class CoordMLPSystem(LightningModule):
                                         
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
-                          shuffle=True,
+                          shuffle=False,
                           num_workers=4,
                           batch_size=self.hparams.batch_size,
                           pin_memory=False)
@@ -130,13 +126,26 @@ class CoordMLPSystem(LightningModule):
         return [self.opt], [scheduler]
 
     def training_step(self, batch, batch_idx):
-        rgb_pred = self(batch['uv'])
-        if hparams.arch=='bacon':
-            loss = sum(mse(x, batch['rgb']) for x in rgb_pred)
-            psnr_ = psnr(rgb_pred[-1], batch['rgb'])
-        else:
-            loss = mse(rgb_pred, batch['rgb'])
-            psnr_ = psnr(rgb_pred, batch['rgb'])
+        # img_pred = self(batch['coords']) #[(h w),2] ->[(h w), 1]
+        # img_pred = rearrange(img_pred, '(h w) c -> c h w', h =256)[None, ...] #[(h w), 1] -> [1,1,h,w]
+        # sino_pred = self.FP_train(img_pred).squeeze(0) #[1,1,h,w] -> [h,w]
+        # batch['img'] = rearrange(batch['img'], '(h w) c -> c h w', h =256)[None, ...]
+        # sino_gt = self.FP_train(batch['img']).squeeze(0)
+        
+        coords, img = batch["coords"], batch["img"] #[b, 256, 256, 2] #是否需要归一化-1~1？
+        img = rearrange(batch["img"], '(h w) c -> c h w', h =256)[None, ...]
+        coords = rearrange(batch["coords"], '(h w) c -> h w c', h =256)[None, ...]
+
+        pre = self(coords)
+        pre = pre.unsqueeze(1) #[1,1,256,256]
+        pre_proj = self.FP_train(pre) #[b,h,w]
+        pre_proj = pre_proj.squeeze(0)
+
+        img_proj = self.FP_train(img)
+        img_proj = img_proj.squeeze(0)
+
+        loss = mse(pre_proj, img_proj)
+        psnr_ = psnr(pre_proj, img_proj)
 
         self.log('lr', self.opt.param_groups[0]['lr'])
         self.log('train/loss', loss)
@@ -145,21 +154,29 @@ class CoordMLPSystem(LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        rgb_pred = self(batch['uv'])
-        rgb_pred = torch.clamp(rgb_pred, min=0, max=1)
+        # img_pred = self(batch['coords'])
+        # img_pred_reshape = rearrange(img_pred, '(h w) c -> c h w', h =256)[None, ...]
+        # sino_pred = self.FP_test(img_pred_reshape).squeeze(0)
+        # img = rearrange(batch['img'], '(h w) c -> c h w', h =256)[None, ...]
+        # sino_gt = self.FP_test(img).squeeze(0)
         
-        if hparams.arch=='bacon':
-            loss = mse(rgb_pred[-1], batch['rgb'], reduction='none')
-        else:
-            loss = mse(rgb_pred, batch['rgb'], reduction='none')
+        coords, img = batch["coords"], batch["img"] #[b, 256, 256, 2] #是否需要归一化-1~1？
+        img = rearrange(batch["img"], '(h w) c -> c h w', h =256)[None, ...]
+        coords = rearrange(batch["coords"], '(h w) c -> h w c', h =256)[None, ...]
+        
+        test_pre = self(coords) 
+        test_pre = test_pre.unsqueeze(1) #[1,1,256,256]
+        test_pre_proj = self.FP_test(test_pre)
+        # test_pre_proj = test_pre_proj.squeeze(0)
+        test_img_proj = self.FP_test(img)
+        # test_img_proj = test_img_proj.squeeze(0)
+        
+        loss = mse(test_img_proj, test_pre_proj, reduction='none')
 
         log = {'val_loss': loss,
-               'rgb_gt': batch['rgb']}
+               'rgb_gt': img.squeeze(0)*255}
 
-        if hparams.arch=='bacon':
-            log['rgb_pred'] = rgb_pred[-1]
-        else:
-            log['rgb_pred'] = rgb_pred #（B，1）
+        log['img_pred'] = test_pre.squeeze(0)*255
 
         return log
     
@@ -180,15 +197,19 @@ class CoordMLPSystem(LightningModule):
     def validation_epoch_end(self, outputs):
         mean_loss = torch.cat([x['val_loss'] for x in outputs]).mean()
         mean_psnr = -10*torch.log10(mean_loss)
-        rgb_gt = torch.cat([x['rgb_gt'] for x in outputs])
-        rgb_gt = rearrange(rgb_gt, '(h w) c -> c h w',
-                           h=hparams.img_wh[1],
-                           w=hparams.img_wh[0])
+        # rgb_gt = torch.cat([x['rgb_gt'] for x in outputs])
+        # rgb_gt = rearrange(rgb_gt, '(h w) c -> c h w',
+        #                    h=hparams.img_wh[1],
+        #                    w=hparams.img_wh[0])
+
+        rgb_gt = outputs[0]['rgb_gt']
+        rgb_pred = outputs[0]['img_pred']
+
  
-        rgb_pred = torch.cat([x['rgb_pred'] for x in outputs])
-        rgb_pred = rearrange(rgb_pred, '(h w) c -> c h w',
-                             h=hparams.img_wh[1],
-                             w=hparams.img_wh[0])
+        # rgb_pred = torch.cat([x['img_pred'] for x in outputs])
+        # rgb_pred = rearrange(rgb_pred, '(h w) c -> c h w',
+        #                      h=hparams.img_wh[1],
+        #                      w=hparams.img_wh[0])
 
         #记录图片
         self.logger.experiment.add_images('val/gt_pred',
@@ -202,38 +223,28 @@ class CoordMLPSystem(LightningModule):
 if __name__ == '__main__':
     hparams = get_opts()
 
-    for filepath,dirnames,filenames in os.walk(hparams.image_file):
-        for filename in tqdm(filenames, desc="image_number"):
-            features_in_hook = []  # 勾的是指定层的输入
-            features_out_hook = []  # 勾的是指定层的输出
+    image_name = 'img0'
+    system = CoordMLPSystem(hparams, hparams.image_path, image_name)
 
-            image_path = os.path.join(filepath,filename)
-            image_name = filename.split(".")[0]
-            system = CoordMLPSystem(hparams, image_path, image_name)
+    pbar = TQDMProgressBar(refresh_rate=1)
+    callbacks = [pbar]
 
-            pbar = TQDMProgressBar(refresh_rate=1)
-            callbacks = [pbar]
+    logger = TensorBoardLogger(save_dir="new_logs",
+                                name=hparams.exp_name,
+                                version= image_name, 
+                                default_hp_metric=False)
 
-            logger = TensorBoardLogger(save_dir="new_logs",
-                                        name=hparams.exp_name,
-                                        version= image_name, 
-                                        default_hp_metric=False)
+    trainer = Trainer(max_epochs=hparams.num_epochs,
+                        callbacks=callbacks,
+                        logger=logger,
+                        enable_model_summary=True,
+                        accelerator='auto',
+                        devices=1,
+                        num_sanity_val_steps=0,
+                        log_every_n_steps=1,
+                        check_val_every_n_epoch=20,
+                        benchmark=True)
 
-            trainer = Trainer(max_epochs=hparams.num_epochs,
-                                callbacks=callbacks,
-                                logger=logger,
-                                enable_model_summary=True,
-                                accelerator='auto',
-                                devices=1,
-                                num_sanity_val_steps=0,
-                                log_every_n_steps=1,
-                                check_val_every_n_epoch=20,
-                                benchmark=True)
-
-            trainer.fit(system)
-            for (name, module) in system.named_modules():
-                if "linear" in name:
-                    module.register_forward_hook(hook=hook)
-            trainer.test(system)
+    trainer.fit(system)
           
 

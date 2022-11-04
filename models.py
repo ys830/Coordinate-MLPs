@@ -2,11 +2,13 @@ import torch
 from torch import nn
 import numpy as np
 from einops import rearrange
+import math
+from torch.nn import functional as F
 
 
 class MLP(nn.Module):
     def __init__(self, n_in,
-                 n_layers=4, n_hidden_units=64,
+                 n_layers=4, n_hidden_units=256,
                  act='relu', act_trainable=False,
                  **kwargs):
         super().__init__()
@@ -46,7 +48,15 @@ class MLP(nn.Module):
         """
         x: (B, 2) # pixel uv (normalized)
         """
-        return self.net(x) # (B, 3) rgb
+        sh = x.shape #[256, 256,2]
+        x= x.to(torch.float32)
+        x = rearrange(x, 'b h w c -> (b h w) c ')
+
+        out = self.net(x)
+        out = torch.reshape(out, list(sh[:-1]))
+
+        return out # (B, 1) rgb
+        
 
 
 class PE(nn.Module):
@@ -332,3 +342,45 @@ class MultiscaleBACON(nn.Module):
                 outs += [self.out(out)]
 
         return outs
+
+class FP(nn.Module):
+    def __init__(self, viewNum, batchSize, train, chanNum=1):
+        super(FP, self).__init__()
+        self.viewNum = viewNum
+        self.Train = train
+        self.batchSize = batchSize
+        self.chanNum = chanNum
+    def forward(self, x):
+        '''
+            x: image 
+            x is a tensor (batchSize*netChanNum*imgSize*imgSize)
+        '''
+        # thetas = np.sort(np.random.uniform(0, math.pi, self.viewNum), axis=0) #(,20)
+        if self.Train:
+            thetas = np.random.uniform(0, math.pi, self.viewNum)
+        else:
+            thetas = np.linspace(0, np.pi,self.viewNum, endpoint=False)
+        thetas = torch.from_numpy(thetas)
+        ''' rotate'''
+        for i in range(len(thetas)):
+            A = np.array([[np.cos(thetas[i]), -np.sin(thetas[i])],
+                          [np.sin(thetas[i]), np.cos(thetas[i])]]) 
+            theta = np.array([[A[0, 0], A[0, 1], 0], [A[1, 0], A[1, 1], 0]])                                    
+            theta = torch.from_numpy(theta).type(torch.FloatTensor)
+            theta = theta.unsqueeze(0)
+            theta = theta.repeat(self.batchSize,1,1)
+            theta = theta.cuda()
+            ''' interpolation'''
+            grid = F.affine_grid(theta, x.size(), align_corners = False) #[b,256,256,2]
+            grid = torch.clamp(grid, -1, 1)
+            x_rotate = F.grid_sample(x, grid, mode="nearest",align_corners = False) #[b,1,256,256]
+            ''' accumulation'''
+            img_projection = x_rotate.mean(dim=2) #[b,1,1,256]
+
+            if  i == 0:
+                sino = img_projection
+            else:
+                sino = torch.cat((sino, img_projection), dim=1)
+
+        sino = sino.cuda()    
+        return sino
